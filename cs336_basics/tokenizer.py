@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from multiprocessing import Pool
 
 import regex
@@ -52,8 +52,24 @@ def init_positional_dicts(
     return pair2pos, pos2tok
 
 
-# TODO: this can me made more efficient because it's not necessary to recompute from
-# scratch all the counts, just update based on last merge
+def init_pair_counter(
+    pretok_counts: dict[bytes, int],
+    pretoks: list[bytes],
+    pair2pos: dict[tuple[bytes, bytes], set[tuple[int, int]]],
+) -> Counter[tuple[bytes, bytes]]:
+    counter = Counter({pair: 0 for pair in pair2pos})
+
+    for pair, pos_list in pair2pos.items():
+        for pos in pos_list:
+            pretok_idx, _ = pos
+            pretok = pretoks[pretok_idx]
+            pretok_count = pretok_counts[pretok]
+
+            counter[pair] += pretok_count
+
+    return counter
+
+
 def find_most_common_pairs(
     pretok_counts: dict[bytes, int],
     pretoks: list[bytes],
@@ -100,19 +116,25 @@ def bpe_tokenize(
     for i in range(256):
         vocab[i + len(special_tokens)] = bytes([i])
 
-    while True:
-        most_common, _ = find_most_common_pairs(pretok_counts, pretoks, pair2pos)
+    pair_counter: Counter[tuple[bytes, bytes]] = init_pair_counter(pretok_counts, pretoks, pair2pos)
 
-        if not most_common:
-            break
+    while pair_counter:
+        [(first, highest)] = pair_counter.most_common(n=1)
 
-        tok1, tok2 = max(most_common)
+        ties = [first]
+        for pair, count in pair_counter.items():
+            if pair != first and count == highest:
+                ties.append(pair)
+
+        tok1, tok2 = max(ties)
         merged_tok = tok1 + tok2
 
         tok_pos_list = pair2pos[(tok1, tok2)]
 
         for pos in sorted(tok_pos_list):
             pretok_idx, tok_idx = pos
+            pretok = pretoks[pretok_idx]
+            pretok_count = pretok_counts[pretok]
 
             # if positions of either of the pair toks is not in pos2tok, skip
             if (pretok_idx, tok_idx) not in pos2tok or (pretok_idx, tok_idx + len(tok1)) not in pos2tok:
@@ -128,23 +150,38 @@ def bpe_tokenize(
 
             if prev_tok is not None:
                 prev_tok_pos_list = pair2pos[(prev_tok, tok1)]
+
                 # find the matching positon and drop it
                 prev_tok_pos_list.remove((pretok_idx, prev_tok_idx))
                 # add it to the new entry that we add to pair2pos
                 pair2pos.setdefault((prev_tok, merged_tok), set()).add((pretok_idx, prev_tok_idx))
+
+                pair_counter[(prev_tok, tok1)] -= pretok_count
+                if pair_counter[(prev_tok, tok1)] <= 0:
+                    del pair_counter[(prev_tok, tok1)]
+
+                pair_counter[(prev_tok, merged_tok)] += pretok_count
 
             # no loop needed for the next token
             # only check if next is present, otherwise skip
             if (pretok_idx, tok_idx + len(merged_tok)) in pos2tok:
                 next_tok = pos2tok[(pretok_idx, tok_idx + len(merged_tok))]
                 next_tok_pos_list = pair2pos[(tok2, next_tok)]
+
                 next_tok_pos_list.remove((pretok_idx, tok_idx + len(tok1)))
                 pair2pos.setdefault((merged_tok, next_tok), set()).add((pretok_idx, tok_idx))
+
+                pair_counter[(tok2, next_tok)] -= pretok_count
+                if pair_counter[(tok2, next_tok)] <= 0:
+                    del pair_counter[(tok2, next_tok)]
+
+                pair_counter[(merged_tok, next_tok)] += pretok_count
 
             del pos2tok[(pretok_idx, tok_idx + len(tok1))]
             pos2tok[(pretok_idx, tok_idx)] = merged_tok
 
         del pair2pos[(tok1, tok2)]
+        del pair_counter[(tok1, tok2)]
         merges.append((tok1, tok2))
         vocab[len(vocab)] = merged_tok
 
