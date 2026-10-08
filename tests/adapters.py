@@ -9,6 +9,8 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+from cs336_basics.tokenizer import bpe_tokenize, parallel_pretokenize, split_into_chunks
+
 
 def run_linear(
     d_in: int,
@@ -589,4 +591,18 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    with open(input_path) as f:
+        text = f.read()
+
+    chunks = split_into_chunks(text, special_tokens)
+
+    pretok_counts = parallel_pretokenize(chunks)
+
+    pretok_counts = {pretok.encode("utf-8"): count for pretok, count in pretok_counts.items()}
+    vocab, merges = bpe_tokenize(
+        pretok_counts,
+        vocab_size=vocab_size,
+        special_tokens=[tok.encode("utf-8") for tok in special_tokens],
+    )
+
+    return vocab, merges
