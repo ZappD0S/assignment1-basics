@@ -1,5 +1,6 @@
-from collections import Counter, defaultdict
+from collections import Counter
 from multiprocessing import Pool
+from re import Match
 
 import regex
 
@@ -11,26 +12,31 @@ def find_special_tokens(text: str):
     return list(set(special_tokens))
 
 
-def split_into_chunks(text: str, special_tokens: list[str]) -> list[str]:
-    pattern = "|".join(regex.escape(tok) for tok in special_tokens)
+def split_into_chunks(text: str, special_tokens: set[str], drop_special_tokens: bool = False) -> list[str]:
+    special_tokens_sorted = sorted(special_tokens, reverse=True)
+    pattern = "(" + "|".join(regex.escape(tok) for tok in special_tokens_sorted) + ")"
     chunks = regex.split(pattern, text)
+
+    if drop_special_tokens:
+        chunks = [chunk for chunk in chunks if chunk not in special_tokens]
+
     return chunks
 
 
 # here text is a single chunk
-def pretokenize(text: str) -> dict[str, int]:
-
+def pretokenize(text: str) -> list[Match]:
     pattern = regex.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+    return list(pattern.finditer(text))
 
-    pretok_counts = defaultdict(lambda: 0)
 
-    for tok in pattern.finditer(text):
-        pretok_counts[tok.group()] += 1
+def parallel_count_pretoks(chunks: list[str]) -> dict[str, int]:
+    pretok_counter: Counter[str] = Counter()
 
-    # sorted_occurs = sorted(pretok_counts.items(), key=lambda x: x[1], reverse=True)
-    # print(sorted_occurs[:5])
+    with Pool() as pool:
+        for pretoks in pool.imap_unordered(pretokenize, chunks):
+            pretok_counter.update(map(lambda x: x.group(), pretoks))
 
-    return dict(pretok_counts)
+    return dict(pretok_counter)
 
 
 def init_positional_dicts(
@@ -119,6 +125,8 @@ def bpe_tokenize(
     pair_counter: Counter[tuple[bytes, bytes]] = init_pair_counter(pretok_counts, pretoks, pair2pos)
 
     while pair_counter:
+        # TODO: we can avoid the Counter entirely by using max
+        # with a key that sorts first by count and then by pair (lexicographically greater token)
         [(first, highest)] = pair_counter.most_common(n=1)
 
         ties = [first]
@@ -191,29 +199,17 @@ def bpe_tokenize(
     return vocab, merges
 
 
-def parallel_pretokenize(chunks: list[str]) -> dict[str, int]:
-    pretok_counts: dict[str, int] = defaultdict(lambda: 0)
-    with Pool() as pool:
-        for chunk_pretok_counts in pool.imap_unordered(pretokenize, chunks):
-            for pretok, count in chunk_pretok_counts.items():
-                pretok_counts[pretok] += count
-
-    return pretok_counts
-
-
 if __name__ == "__main__":
     with open("../data/TinyStoriesV2-GPT4-valid.txt") as f:
         text = f.read()
 
-    special_tokens = find_special_tokens(text)
-    chunks = split_into_chunks(text, special_tokens)
+    special_tokens = set(find_special_tokens(text))
+    chunks = split_into_chunks(text, special_tokens, drop_special_tokens=True)
 
-    pretok_counts = parallel_pretokenize(chunks)
+    pretok_counts = parallel_count_pretoks(chunks)
 
     pretok_counts = {pretok.encode("utf-8"): count for pretok, count in pretok_counts.items()}
     vocab, merges = bpe_tokenize(
         pretok_counts,
         special_tokens=[tok.encode("utf-8") for tok in special_tokens],
     )
-    # print(vocab)
-    # print(merges)
