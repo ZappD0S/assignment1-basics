@@ -10,6 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from cs336_basics.bpe_train import bpe_tokenize, parallel_count_pretoks, split_into_chunks
+from cs336_basics.linear import Linear
 from cs336_basics.tokenizer import Tokenizer
 
 
@@ -32,7 +33,10 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    lin = Linear(d_in, d_out)
+    lin.load_state_dict({"weight": weights})
+
+    return lin(in_features)
 
 
 def run_embedding(
@@ -97,6 +101,11 @@ def run_scaled_dot_product_attention(
 ) -> Float[Tensor, " ... queries d_v"]:
     """
     Given key (K), query (Q), and value (V) tensors, return
+    the output of your scaled dot product attention implementation.
+
+    Args:
+        Q (Float[Tensor, " ... queries d_k"]): Query tensor
+        K (Float[Tensor, " ... keys d_k"]): Key tensor
     the output of your scaled dot product attention implementation.
 
     Args:
@@ -593,11 +602,6 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    with open(input_path) as f:
-        text = f.read()
-
-    special_tokens_set = set(special_tokens)
-    chunks = split_into_chunks(text, special_tokens_set, drop_special_tokens=True)
 
     pretok_counts = parallel_count_pretoks(chunks)
 
